@@ -1,33 +1,49 @@
-# Finan — MVP Factoring & BNPL
+# Finan — MVP Factoring, RBF & BNPL
 
 Plataforma web en **Streamlit** para operar:
 
-- **Factoring**: adelanto de cupones de tarjeta (neto, comisión, TNA/TEA)
-- **BNPL**: créditos de consumo en comercios (cronograma + pagaré WhatsApp)
-- **Dashboard**: cartera activa, comisiones del mes y vencimientos
+- **Factoring**: adelanto de cupones (comisión, TNA/TEA, mercado, Signatura)
+- **Adelanto de Flujo (RBF)**: crédito al comercio cobrado por barridos (francés/plana)
+- **BNPL**: créditos de consumo en comercios
+- **Trazabilidad**: expediente + audit log + firma **Signatura Flex**
 
 ## Estructura
 
 ```
 finan/
-├── app.py                 # Entrada + navegación + dashboard
+├── app.py
 ├── requirements.txt
 └── modules/
-    ├── database.py        # Persistencia SQLite local
-    ├── factoring.py       # Adelanto de cupones
-    ├── bnpl.py            # Créditos BNPL
-    └── ui.py              # Estilos y componentes visuales
+    ├── database.py
+    ├── factoring.py
+    ├── market_rates.py
+    ├── rbf_engine.py
+    ├── rbf_ui.py
+    ├── credito_comercio.py   # legado simple
+    ├── bnpl.py
+    ├── traceability.py
+    ├── signatura.py
+    ├── documents.py
+    ├── trazabilidad_ui.py
+    └── ui.py
 ```
 
 ## Requisitos
 
 - Python 3.10+
+- Cuenta [Signatura Flex](https://signatura.co/flex-plan) + API key en [connect.signatura.co](https://connect.signatura.co)
 
 ## Instalación y uso
 
 ```bash
-pip install -r requirements.txt
-streamlit run app.py
+python -m venv .venv
+.\.venv\Scripts\pip install -r requirements.txt
+.\.venv\Scripts\streamlit run app.py
 ```
 
-La base de datos local `finan.db` se crea automáticamente al iniciar (no se versiona).
+1. **Trazabilidad → Signatura / Config**: pegá la API key (o `SIGNATURA_API_KEY`).
+2. Factoring / RBF / BNPL: registran expediente en `borrador`.
+3. Trazabilidad: PDF → Signatura → sync → desembolsar.
+4. RBF v1: barridos se registran manualmente (integración procesadora después).
+
+La base `finan.db` se crea automáticamente (no se versiona).

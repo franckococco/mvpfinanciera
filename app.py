@@ -16,6 +16,8 @@ import streamlit as st
 from modules.bnpl import render_bnpl
 from modules.database import get_dashboard_metrics, init_db
 from modules.factoring import render_factoring
+from modules.rbf_ui import render_rbf
+from modules.trazabilidad_ui import render_trazabilidad
 from modules.ui import fmt_ars, inject_styles, kpi_card, plotly_layout
 
 
@@ -215,7 +217,7 @@ def main() -> None:
     with st.sidebar:
         st.markdown('<p class="finan-brand">Finan</p>', unsafe_allow_html=True)
         st.markdown(
-            '<p class="finan-sub">Factoring & BNPL · MVP interactivo</p>',
+            '<p class="finan-sub">Factoring · RBF · BNPL</p>',
             unsafe_allow_html=True,
         )
         st.divider()
@@ -225,7 +227,9 @@ def main() -> None:
             options=[
                 "Dashboard",
                 "Adelanto de Cupones",
+                "Adelanto de Flujo (RBF)",
                 "Créditos BNPL",
+                "Trazabilidad",
             ],
             index=0,
             label_visibility="collapsed",
@@ -242,8 +246,12 @@ def main() -> None:
         render_dashboard()
     elif pagina == "Adelanto de Cupones":
         render_factoring()
+    elif pagina == "Adelanto de Flujo (RBF)":
+        render_rbf()
     elif pagina == "Créditos BNPL":
         render_bnpl()
+    elif pagina == "Trazabilidad":
+        render_trazabilidad()
 
 
 if __name__ == "__main__":

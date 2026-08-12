@@ -23,6 +23,7 @@ from modules.database import (
     list_bnpl_installments,
     update_installment_estado,
 )
+from modules.traceability import crear_operacion
 from modules.ui import badge_estado, fmt_ars, kpi_card, plotly_layout, result_strip
 
 
@@ -159,6 +160,12 @@ def _render_simulador() -> None:
         dni = st.text_input("DNI del cliente *", placeholder="12345678", key="bnpl_dni")
         nombre = st.text_input("Nombre del cliente", placeholder="Juan Pérez", key="bnpl_nombre")
         comercio = st.text_input("Comercio *", placeholder="Ej: Electro Hogar SA", key="bnpl_comercio")
+        email_firmante = st.text_input(
+            "Email para firma Signatura",
+            placeholder="cliente@mail.com",
+            key="bnpl_email",
+        )
+        telefono_firmante = st.text_input("Teléfono firma", key="bnpl_tel")
 
         monto = st.number_input(
             "Monto del producto (ARS) *",
@@ -305,7 +312,26 @@ def _render_simulador() -> None:
                     "creado_en": datetime.now().isoformat(timespec="seconds"),
                 }
                 credito_id = insert_bnpl_credit(credit_data, cronograma)
-                st.success(f"Crédito #{credito_id} registrado · {comercio.strip()} · cuota {fmt_ars(cuota)}")
+                exp_id = crear_operacion(
+                    "bnpl",
+                    comercio.strip(),
+                    round(monto, 2),
+                    email_firmante=email_firmante.strip(),
+                    telefono_firmante=telefono_firmante.strip(),
+                    ref_tabla="bnpl_credits",
+                    ref_id=credito_id,
+                    payload={
+                        "dni_cliente": dni.strip(),
+                        "nombre_cliente": nombre.strip(),
+                        "cuotas": int(n_cuotas),
+                        "cuota_mensual": cuota,
+                        "total_a_pagar": total_a_pagar,
+                    },
+                )
+                st.success(
+                    f"Crédito #{credito_id} · expediente #{exp_id} · cuota {fmt_ars(cuota)}. "
+                    "Firmá desde **Trazabilidad**."
+                )
                 st.balloons()
 
 

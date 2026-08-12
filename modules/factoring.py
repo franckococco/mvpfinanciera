@@ -19,6 +19,14 @@ from modules.database import (
     list_factoring_ops,
     update_factoring_estado,
 )
+from modules.market_rates import (
+    ACTUALIZADO,
+    add_business_days,
+    economia_operacion_finan,
+    filas_mercado_para_monto,
+    sugerir_comision,
+)
+from modules.traceability import crear_operacion
 from modules.ui import badge_estado, fmt_ars, kpi_card, plotly_layout, result_strip
 
 
@@ -85,40 +93,112 @@ def _render_simulador() -> None:
             placeholder="XX-XXXXXXXX-X",
             key="fac_cuit",
         )
+        email_firmante = st.text_input(
+            "Email firmante comercio (Signatura)",
+            placeholder="comercio@mail.com",
+            key="fac_email",
+        )
+        telefono_firmante = st.text_input(
+            "Teléfono firmante",
+            placeholder="+54911...",
+            key="fac_tel",
+        )
+        email_fiador = st.text_input("Email fiador (opcional)", key="fac_email_f")
+        cuit_fiador = st.text_input("CUIT/CUIL fiador (opcional)", key="fac_cuit_f")
 
         monto_bruto = st.number_input(
             "Monto total del cupón (ARS) *",
             min_value=0.0,
-            value=100_000.0,
+            value=300_000.0,
             step=5_000.0,
             format="%.2f",
             key="fac_monto",
         )
-        # Slider rápido + ajuste fino
+
+        st.markdown("##### Plazo de cobro del cupón (caja)")
+        plazo_label = st.radio(
+            "¿En cuántos días hábiles vuelve la plata? (BCRA)",
+            options=[
+                "8 · micro/pyme (caja rápida)",
+                "10 · mediana / gastronomía-salud-turismo",
+                "18 · grandes comercios (caja lenta)",
+            ],
+            index=0,
+            key="fac_plazo_bcra",
+        )
+        plazo_dias = int(plazo_label.split("·")[0].strip())
+
+        fecha_operacion = st.date_input(
+            "Fecha de la operación",
+            value=date.today(),
+            key="fac_fecha_op",
+        )
+        fecha_liquidacion = add_business_days(fecha_operacion, plazo_dias)
+        st.caption(
+            f"Liquidación estimada: **{fecha_liquidacion.isoformat()}** "
+            f"({plazo_dias} días hábiles, sin feriados)."
+        )
+        override_fecha = st.checkbox("Usar fecha de liquidación manual", key="fac_fecha_manual")
+        if override_fecha:
+            fecha_liquidacion = st.date_input(
+                "Fecha de liquidación *",
+                value=fecha_liquidacion,
+                key="fac_fecha_liq",
+            )
+
+        st.markdown("##### Costos de la operación (vos / Finan)")
+        firmantes = st.number_input(
+            "Firmantes Signatura",
+            min_value=1,
+            max_value=4,
+            value=2 if (email_fiador.strip() or cuit_fiador.strip()) else 1,
+            key="fac_firmantes",
+            help="Flex: ~$1.700 ARS por firma simple (crédito).",
+        )
+        buffer_riesgo = st.number_input(
+            "Buffer riesgo (%)",
+            min_value=0.0,
+            max_value=5.0,
+            value=0.3,
+            step=0.1,
+            key="fac_riesgo",
+            help="Reserva sobre el bruto por contracargos / fallas.",
+        )
+        tna_capital = st.number_input(
+            "Tu costo de capital TNA (%)",
+            min_value=0.0,
+            max_value=120.0,
+            value=0.0,
+            step=1.0,
+            key="fac_tna_cap",
+            help="Si financiás con plata cara, cargá tu TNA. 0 = no descontar.",
+        )
+
+        sug = sugerir_comision(
+            monto_bruto,
+            plazo_dias,
+            firmantes=int(firmantes),
+            buffer_riesgo_pct=float(buffer_riesgo),
+        )
+        st.info(
+            f"**Comisión sugerida: {sug['comision_sugerida_pct']}%** · "
+            f"{sug['etiqueta_caja']} · piso break-even {sug['piso_pct']}%"
+        )
+        if st.button("Usar comisión sugerida", key="fac_usar_sug"):
+            st.session_state["fac_tasa"] = float(sug["comision_sugerida_pct"])
+            st.rerun()
+
+        if "fac_tasa" not in st.session_state:
+            st.session_state["fac_tasa"] = float(sug["comision_sugerida_pct"])
+
         tasa_comision = st.slider(
             "Tasa de comisión (%) *",
             min_value=0.0,
             max_value=20.0,
-            value=5.0,
             step=0.1,
             help="Porcentaje descontado sobre el monto bruto del cupón.",
             key="fac_tasa",
         )
-
-        c1, c2 = st.columns(2)
-        with c1:
-            fecha_operacion = st.date_input(
-                "Fecha de la operación",
-                value=date.today(),
-                key="fac_fecha_op",
-            )
-        with c2:
-            fecha_liquidacion = st.date_input(
-                "Fecha de liquidación *",
-                value=date.today() + timedelta(days=21),
-                help="Fecha en que el adquirente liquidaría el cupón.",
-                key="fac_fecha_liq",
-            )
 
     # Preview en vivo (siempre visible)
     try:
@@ -140,17 +220,69 @@ def _render_simulador() -> None:
         if not calc_ok or resultado is None:
             st.warning(calc_error or "Ajustá los parámetros.")
         else:
-            kpi_card("Neto a transferir", fmt_ars(resultado["monto_neto"]), "Al comercio")
-            kpi_card("Ganancia financiera", fmt_ars(resultado["ganancia"]), f"Comisión {resultado['tasa_comision']:.1f}%")
+            economia = economia_operacion_finan(
+                resultado["monto_bruto"],
+                resultado["tasa_comision"],
+                resultado["dias_adelanto"],
+                firmantes=int(firmantes),
+                buffer_riesgo_pct=float(buffer_riesgo),
+                costo_capital_tna_pct=float(tna_capital),
+            )
+            econ_sug = economia_operacion_finan(
+                resultado["monto_bruto"],
+                sug["comision_sugerida_pct"],
+                resultado["dias_adelanto"],
+                firmantes=int(firmantes),
+                buffer_riesgo_pct=float(buffer_riesgo),
+                costo_capital_tna_pct=float(tna_capital),
+            )
+
+            st.markdown("##### Proyección de caja")
             result_strip(
                 [
-                    ("Días adelanto", f"{resultado['dias_adelanto']}"),
+                    ("Días hábiles", f"{plazo_dias}"),
+                    ("Días corridos", f"{resultado['dias_adelanto']}"),
+                    ("Vuelve", fecha_liquidacion.isoformat()),
+                ]
+            )
+            kpi_card(
+                "Comisión sugerida",
+                f"{sug['comision_sugerida_pct']}%",
+                f"Neto Finan est. {fmt_ars(econ_sug['neto_finan'])}",
+            )
+            kpi_card("Neto a transferir", fmt_ars(resultado["monto_neto"]), "Al comercio (hoy)")
+            kpi_card(
+                "Tu comisión (slider)",
+                fmt_ars(resultado["ganancia"]),
+                f"{resultado['tasa_comision']:.1f}%",
+            )
+            result_strip(
+                [
                     ("TNA", f"{resultado['tna']:.2f}%"),
                     ("TEA", f"{resultado['tea']:.2f}%"),
+                    ("Piso", f"{sug['piso_pct']}%"),
                 ]
             )
 
-            # Mini gráfico: composición bruto = neto + comisión
+            st.markdown("##### ¿Cuánto te queda?")
+            kpi_card(
+                "Neto Finan",
+                fmt_ars(economia["neto_finan"]),
+                f"Margen {economia['margen_sobre_bruto_pct']:.2f}% s/ bruto",
+            )
+            result_strip(
+                [
+                    ("+ Comisión", fmt_ars(economia["ingreso_comision"])),
+                    ("− Signatura", fmt_ars(economia["gasto_signatura"])),
+                    ("− Riesgo", fmt_ars(economia["gasto_riesgo"])),
+                    ("− Capital", fmt_ars(economia["gasto_capital"])),
+                ]
+            )
+            if economia["neto_finan"] <= 0:
+                st.error("Con estos números la operación te deja en cero o negativo.")
+            elif economia["neto_finan"] < economia["gasto_signatura"]:
+                st.warning("El neto apenas cubre (o poco más) el costo de firma.")
+
             fig = px.pie(
                 names=["Neto comercio", "Comisión"],
                 values=[resultado["monto_neto"], resultado["ganancia"]],
@@ -160,6 +292,45 @@ def _render_simulador() -> None:
             plotly_layout(fig, "Composición del cupón")
             fig.update_traces(textinfo="percent+label", textfont_size=11)
             st.plotly_chart(fig, use_container_width=True)
+
+            fig_g = px.bar(
+                x=["Comisión", "Signatura", "Riesgo", "Capital", "Neto Finan"],
+                y=[
+                    economia["ingreso_comision"],
+                    -economia["gasto_signatura"],
+                    -economia["gasto_riesgo"],
+                    -economia["gasto_capital"],
+                    economia["neto_finan"],
+                ],
+                labels={"x": "", "y": "ARS"},
+                color_discrete_sequence=["#22c55e"],
+            )
+            plotly_layout(fig_g, "Ingreso vs gastos")
+            st.plotly_chart(fig_g, use_container_width=True)
+
+    if calc_ok and resultado is not None:
+        with st.expander(
+            f"Mercado oficial: Payway / Fiserv / Getnet / Mercado Pago / Galicia (act. {ACTUALIZADO})",
+            expanded=False,
+        ):
+            st.caption(
+                "Números tomados de páginas/PDF oficiales. "
+                "Donde dice 'Hasta' es el techo publicado (tu comercio puede pagar menos). "
+                "MP aclara que pueden variar impuestos provinciales. "
+                "La columna Nota cita la condición real de la fuente."
+            )
+            df_m = pd.DataFrame(filas_mercado_para_monto(resultado["monto_bruto"]))
+            st.dataframe(
+                df_m,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Costo est. ARS": st.column_config.NumberColumn(format="$ %.2f"),
+                    "Neto comercio": st.column_config.NumberColumn(format="$ %.2f"),
+                    "Fuente": st.column_config.LinkColumn("Fuente"),
+                    "Nota": st.column_config.TextColumn("Nota", width="large"),
+                },
+            )
 
     st.divider()
     col_btn, col_msg = st.columns([1, 2])
@@ -195,7 +366,44 @@ def _render_simulador() -> None:
             "creado_en": datetime.now().isoformat(timespec="seconds"),
         }
         op_id = insert_factoring_op(registro)
-        st.success(f"Operación #{op_id} registrada · {registro['comercio']} · {fmt_ars(resultado['monto_neto'])} neto")
+        econ = economia_operacion_finan(
+            resultado["monto_bruto"],
+            resultado["tasa_comision"],
+            resultado["dias_adelanto"],
+            firmantes=int(firmantes),
+            buffer_riesgo_pct=float(buffer_riesgo),
+            costo_capital_tna_pct=float(tna_capital),
+        )
+        exp_id = crear_operacion(
+            "factoring",
+            registro["comercio"],
+            registro["monto_bruto"],
+            cuit=registro.get("cuit", ""),
+            email_firmante=email_firmante.strip(),
+            telefono_firmante=telefono_firmante.strip(),
+            email_fiador=email_fiador.strip(),
+            cuit_fiador=cuit_fiador.strip(),
+            ref_tabla="factoring_ops",
+            ref_id=op_id,
+            payload={
+                "monto_neto": registro["monto_neto"],
+                "ganancia": registro["ganancia"],
+                "tasa_comision": registro["tasa_comision"],
+                "fecha_liquidacion": registro["fecha_liquidacion"],
+                "tna": registro["tna"],
+                "tea": registro["tea"],
+                "plazo_habiles_bcra": plazo_dias,
+                "comision_sugerida_pct": sug["comision_sugerida_pct"],
+                "economia_finan": econ,
+            },
+        )
+        st.success(
+            f"Operación #{op_id} · expediente #{exp_id} · "
+            f"plazo {plazo_dias} DH · "
+            f"neto comercio {fmt_ars(resultado['monto_neto'])} · "
+            f"neto Finan est. {fmt_ars(econ['neto_finan'])}. "
+            "Firmá desde **Trazabilidad**."
+        )
         st.balloons()
 
 

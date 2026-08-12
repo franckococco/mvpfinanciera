@@ -38,9 +38,10 @@ def init_db() -> None:
     Crea las tablas si no existen.
 
     Tablas:
-      - factoring_ops: operaciones de adelanto de cupones.
-      - bnpl_credits: créditos BNPL (cabecera).
-      - bnpl_installments: cronograma de cuotas de cada crédito.
+      - factoring_ops / bnpl_*: módulos operativos existentes.
+      - operaciones: expediente unificado (cupón / crédito comercio / BNPL).
+      - audit_events: cadena de hashes append-only.
+      - app_settings: config local (ej. API key Signatura).
     """
     with get_connection() as conn:
         conn.executescript(
@@ -89,6 +90,121 @@ def init_db() -> None:
                 estado          TEXT    NOT NULL DEFAULT 'pendiente',
                 FOREIGN KEY (credito_id) REFERENCES bnpl_credits(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS operaciones (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                tipo                TEXT    NOT NULL,
+                ref_tabla           TEXT,
+                ref_id              INTEGER,
+                comercio            TEXT    NOT NULL,
+                cuit                TEXT,
+                email_firmante      TEXT,
+                telefono_firmante   TEXT,
+                email_fiador        TEXT,
+                telefono_fiador     TEXT,
+                cuit_fiador         TEXT,
+                monto               REAL    NOT NULL,
+                moneda              TEXT    NOT NULL DEFAULT 'ARS',
+                estado              TEXT    NOT NULL DEFAULT 'borrador',
+                doc_hash_sha256     TEXT,
+                signatura_doc_id    TEXT,
+                signatura_status    TEXT,
+                signatura_cert_url  TEXT,
+                payload_json        TEXT,
+                creado_en           TEXT    NOT NULL,
+                actualizado_en      TEXT    NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS audit_events (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                operacion_id    INTEGER NOT NULL,
+                event_type      TEXT    NOT NULL,
+                payload_json    TEXT,
+                prev_hash       TEXT    NOT NULL,
+                event_hash      TEXT    NOT NULL,
+                created_at_utc  TEXT    NOT NULL,
+                FOREIGN KEY (operacion_id) REFERENCES operaciones(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_operaciones_estado
+                ON operaciones(estado);
+            CREATE INDEX IF NOT EXISTS idx_operaciones_tipo
+                ON operaciones(tipo);
+            CREATE INDEX IF NOT EXISTS idx_audit_op
+                ON audit_events(operacion_id);
+
+            CREATE TABLE IF NOT EXISTS rbf_merchants (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                business_name   TEXT    NOT NULL,
+                tax_id_cuit     TEXT,
+                tax_status      TEXT    NOT NULL DEFAULT 'MONOTRIBUTO',
+                has_echeq       INTEGER NOT NULL DEFAULT 0,
+                avg_daily_sales REAL    NOT NULL DEFAULT 0,
+                bank_cbu        TEXT,
+                email           TEXT,
+                phone           TEXT,
+                creado_en       TEXT    NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS rbf_loans (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                merchant_id     INTEGER NOT NULL,
+                principal       REAL    NOT NULL,
+                monthly_rate    REAL    NOT NULL,
+                term_months     INTEGER NOT NULL,
+                calc_type       TEXT    NOT NULL,
+                frequency       TEXT    NOT NULL,
+                cuota_mensual   REAL    NOT NULL,
+                total_a_cobrar  REAL    NOT NULL,
+                interes_total   REAL    NOT NULL,
+                status          TEXT    NOT NULL DEFAULT 'ACTIVE',
+                start_date      TEXT    NOT NULL,
+                operacion_id    INTEGER,
+                payload_json    TEXT,
+                creado_en       TEXT    NOT NULL,
+                FOREIGN KEY (merchant_id) REFERENCES rbf_merchants(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS rbf_guarantees (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                loan_id         INTEGER NOT NULL,
+                type            TEXT    NOT NULL,
+                identifier      TEXT,
+                amount_covered  REAL    NOT NULL,
+                is_active       INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY (loan_id) REFERENCES rbf_loans(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS rbf_sweeps (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                loan_id         INTEGER NOT NULL,
+                nro             INTEGER NOT NULL,
+                due_date        TEXT    NOT NULL,
+                expected_amount REAL    NOT NULL,
+                collected_amount REAL   NOT NULL DEFAULT 0,
+                penalty_fee     REAL    NOT NULL DEFAULT 0,
+                retention_pct   REAL,
+                status          TEXT    NOT NULL DEFAULT 'PENDING',
+                FOREIGN KEY (loan_id) REFERENCES rbf_loans(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS rbf_grace (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                loan_id         INTEGER NOT NULL,
+                month           TEXT    NOT NULL,
+                used_grace_days_count INTEGER NOT NULL DEFAULT 0,
+                auto_recovery_active INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(loan_id, month),
+                FOREIGN KEY (loan_id) REFERENCES rbf_loans(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_rbf_loans_status ON rbf_loans(status);
+            CREATE INDEX IF NOT EXISTS idx_rbf_sweeps_loan ON rbf_sweeps(loan_id);
             """
         )
 
@@ -471,3 +587,426 @@ def get_dashboard_metrics() -> dict[str, Any]:
         "ganancia_hist_factoring": ganancia_hist,
         "interes_cobrado_bnpl": interes_cobrado,
     }
+
+
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
+
+def get_setting(key: str) -> Optional[str]:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT value FROM app_settings WHERE key = ?", (key,)
+        ).fetchone()
+        return str(row["value"]) if row else None
+
+
+def set_setting(key: str, value: str) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (key, value),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Operaciones (trazabilidad unificada)
+# ---------------------------------------------------------------------------
+
+def insert_operacion(data: dict[str, Any]) -> int:
+    with get_connection() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO operaciones (
+                tipo, ref_tabla, ref_id, comercio, cuit,
+                email_firmante, telefono_firmante,
+                email_fiador, telefono_fiador, cuit_fiador,
+                monto, moneda, estado, doc_hash_sha256,
+                signatura_doc_id, signatura_status, signatura_cert_url,
+                payload_json, creado_en, actualizado_en
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data["tipo"],
+                data.get("ref_tabla") or "",
+                data.get("ref_id"),
+                data["comercio"],
+                data.get("cuit") or "",
+                data.get("email_firmante") or "",
+                data.get("telefono_firmante") or "",
+                data.get("email_fiador") or "",
+                data.get("telefono_fiador") or "",
+                data.get("cuit_fiador") or "",
+                data["monto"],
+                data.get("moneda") or "ARS",
+                data.get("estado") or "borrador",
+                data.get("doc_hash_sha256"),
+                data.get("signatura_doc_id"),
+                data.get("signatura_status"),
+                data.get("signatura_cert_url"),
+                data.get("payload_json") or "{}",
+                data["creado_en"],
+                data["actualizado_en"],
+            ),
+        )
+        return int(cursor.lastrowid)
+
+
+def get_operacion(op_id: int) -> Optional[dict[str, Any]]:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM operaciones WHERE id = ?", (op_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def list_operaciones(
+    estado: Optional[str] = None,
+    tipo: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if estado:
+        clauses.append("estado = ?")
+        params.append(estado)
+    if tipo:
+        clauses.append("tipo = ?")
+        params.append(tipo)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM operaciones {where} ORDER BY id DESC",
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def update_operacion(op_id: int, fields: dict[str, Any]) -> None:
+    if not fields:
+        return
+    cols = ", ".join(f"{k} = ?" for k in fields)
+    values = list(fields.values()) + [op_id]
+    with get_connection() as conn:
+        conn.execute(f"UPDATE operaciones SET {cols} WHERE id = ?", values)
+
+
+def append_audit_event(data: dict[str, Any]) -> dict[str, Any]:
+    with get_connection() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO audit_events (
+                operacion_id, event_type, payload_json,
+                prev_hash, event_hash, created_at_utc
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data["operacion_id"],
+                data["event_type"],
+                data.get("payload_json") or "{}",
+                data["prev_hash"],
+                data["event_hash"],
+                data["created_at_utc"],
+            ),
+        )
+        event_id = int(cursor.lastrowid)
+    return {
+        "id": event_id,
+        "operacion_id": data["operacion_id"],
+        "event_type": data["event_type"],
+        "payload_json": data.get("payload_json") or "{}",
+        "prev_hash": data["prev_hash"],
+        "event_hash": data["event_hash"],
+        "created_at_utc": data["created_at_utc"],
+    }
+
+
+def list_audit_events(operacion_id: int) -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM audit_events
+            WHERE operacion_id = ?
+            ORDER BY id ASC
+            """,
+            (operacion_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# RBF — Adelanto de Flujo
+# ---------------------------------------------------------------------------
+
+def insert_rbf_merchant(data: dict[str, Any]) -> int:
+    with get_connection() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO rbf_merchants (
+                business_name, tax_id_cuit, tax_status, has_echeq,
+                avg_daily_sales, bank_cbu, email, phone, creado_en
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data["business_name"],
+                data.get("tax_id_cuit") or "",
+                data.get("tax_status") or "MONOTRIBUTO",
+                1 if data.get("has_echeq") else 0,
+                float(data.get("avg_daily_sales") or 0),
+                data.get("bank_cbu") or "",
+                data.get("email") or "",
+                data.get("phone") or "",
+                data.get("creado_en") or datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def list_rbf_merchants() -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM rbf_merchants ORDER BY id DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_rbf_merchant(merchant_id: int) -> Optional[dict[str, Any]]:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM rbf_merchants WHERE id = ?", (merchant_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def insert_rbf_loan(
+    loan: dict[str, Any],
+    sweeps: list[dict[str, Any]],
+    guarantees: list[dict[str, Any]],
+) -> int:
+    with get_connection() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO rbf_loans (
+                merchant_id, principal, monthly_rate, term_months, calc_type,
+                frequency, cuota_mensual, total_a_cobrar, interes_total,
+                status, start_date, operacion_id, payload_json, creado_en
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                loan["merchant_id"],
+                loan["principal"],
+                loan["monthly_rate"],
+                loan["term_months"],
+                loan["calc_type"],
+                loan["frequency"],
+                loan["cuota_mensual"],
+                loan["total_a_cobrar"],
+                loan["interes_total"],
+                loan.get("status") or "ACTIVE",
+                loan["start_date"],
+                loan.get("operacion_id"),
+                loan.get("payload_json") or "{}",
+                loan.get("creado_en") or datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+        loan_id = int(cur.lastrowid)
+
+        for s in sweeps:
+            conn.execute(
+                """
+                INSERT INTO rbf_sweeps (
+                    loan_id, nro, due_date, expected_amount, collected_amount,
+                    penalty_fee, retention_pct, status
+                ) VALUES (?, ?, ?, ?, 0, 0, ?, 'PENDING')
+                """,
+                (
+                    loan_id,
+                    s["nro"],
+                    s["due_date"],
+                    s["expected_amount"],
+                    s.get("retention_pct"),
+                ),
+            )
+
+        for g in guarantees:
+            conn.execute(
+                """
+                INSERT INTO rbf_guarantees (
+                    loan_id, type, identifier, amount_covered, is_active
+                ) VALUES (?, ?, ?, ?, 1)
+                """,
+                (
+                    loan_id,
+                    g["type"],
+                    g.get("identifier") or "",
+                    float(g.get("amount_covered") or loan["total_a_cobrar"]),
+                ),
+            )
+
+        # grace tracker primer mes
+        month_key = loan["start_date"][:7]
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO rbf_grace (
+                loan_id, month, used_grace_days_count, auto_recovery_active
+            ) VALUES (?, ?, 0, 0)
+            """,
+            (loan_id, month_key),
+        )
+        return loan_id
+
+
+def list_rbf_loans(status: Optional[str] = None) -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        if status:
+            rows = conn.execute(
+                """
+                SELECT l.*, m.business_name, m.tax_id_cuit
+                FROM rbf_loans l
+                JOIN rbf_merchants m ON m.id = l.merchant_id
+                WHERE l.status = ?
+                ORDER BY l.id DESC
+                """,
+                (status,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT l.*, m.business_name, m.tax_id_cuit
+                FROM rbf_loans l
+                JOIN rbf_merchants m ON m.id = l.merchant_id
+                ORDER BY l.id DESC
+                """
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_rbf_loan(loan_id: int) -> Optional[dict[str, Any]]:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT l.*, m.business_name, m.tax_id_cuit, m.avg_daily_sales,
+                   m.tax_status, m.has_echeq, m.email, m.phone
+            FROM rbf_loans l
+            JOIN rbf_merchants m ON m.id = l.merchant_id
+            WHERE l.id = ?
+            """,
+            (loan_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def list_rbf_sweeps(loan_id: int) -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM rbf_sweeps
+            WHERE loan_id = ?
+            ORDER BY nro ASC
+            """,
+            (loan_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def update_rbf_sweep(
+    sweep_id: int,
+    *,
+    collected_amount: float,
+    status: str,
+    penalty_fee: float = 0.0,
+) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE rbf_sweeps
+            SET collected_amount = ?, status = ?, penalty_fee = ?
+            WHERE id = ?
+            """,
+            (collected_amount, status, penalty_fee, sweep_id),
+        )
+
+
+def update_rbf_loan_status(loan_id: int, status: str) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE rbf_loans SET status = ? WHERE id = ?",
+            (status, loan_id),
+        )
+
+
+def get_rbf_grace(loan_id: int, month: str) -> dict[str, Any]:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM rbf_grace WHERE loan_id = ? AND month = ?
+            """,
+            (loan_id, month),
+        ).fetchone()
+        if row:
+            return dict(row)
+        conn.execute(
+            """
+            INSERT INTO rbf_grace (
+                loan_id, month, used_grace_days_count, auto_recovery_active
+            ) VALUES (?, ?, 0, 0)
+            """,
+            (loan_id, month),
+        )
+        row = conn.execute(
+            "SELECT * FROM rbf_grace WHERE loan_id = ? AND month = ?",
+            (loan_id, month),
+        ).fetchone()
+        return dict(row) if row else {
+            "loan_id": loan_id,
+            "month": month,
+            "used_grace_days_count": 0,
+            "auto_recovery_active": 0,
+        }
+
+
+def update_rbf_grace(
+    loan_id: int,
+    month: str,
+    used: int,
+    auto_recovery: bool,
+) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO rbf_grace (
+                loan_id, month, used_grace_days_count, auto_recovery_active
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(loan_id, month) DO UPDATE SET
+                used_grace_days_count = excluded.used_grace_days_count,
+                auto_recovery_active = excluded.auto_recovery_active
+            """,
+            (loan_id, month, used, 1 if auto_recovery else 0),
+        )
+
+
+def rbf_loan_progress(loan_id: int) -> dict[str, Any]:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN status = 'PAID' THEN 1 ELSE 0 END) AS paid,
+                COALESCE(SUM(expected_amount), 0) AS expected,
+                COALESCE(SUM(collected_amount), 0) AS collected
+            FROM rbf_sweeps WHERE loan_id = ?
+            """,
+            (loan_id,),
+        ).fetchone()
+        total = int(row["total"] or 0)
+        paid = int(row["paid"] or 0)
+        return {
+            "total": total,
+            "paid": paid,
+            "expected": float(row["expected"]),
+            "collected": float(row["collected"]),
+            "pct": (paid / total * 100) if total else 0.0,
+        }
+
