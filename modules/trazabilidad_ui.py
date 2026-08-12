@@ -11,7 +11,7 @@ import streamlit as st
 
 from modules import signatura
 from modules.database import get_operacion, list_operaciones
-from modules.documents import generar_pdf_operacion
+from modules.documents import TEMPLATE_VERSION, generar_pdf_operacion, nombre_plantilla
 from modules.signatura import SignaturaError
 from modules.traceability import (
     ESTADOS,
@@ -28,7 +28,10 @@ from modules.ui import fmt_ars, kpi_card
 
 def render_trazabilidad() -> None:
     st.header("Trazabilidad")
-    st.caption("Expediente único · cupón · crédito comercio · BNPL · firma Signatura Flex")
+    st.caption(
+        f"Expediente único · cupón · RBF · BNPL · firma Signatura Flex · "
+        f"plantillas {TEMPLATE_VERSION}"
+    )
 
     tab_ops, tab_cfg = st.tabs(["Expedientes", "Signatura / Config"])
 
@@ -158,6 +161,8 @@ def _render_ops() -> None:
         return
 
     st.subheader(f"Expediente #{op['id']}")
+    plantilla = nombre_plantilla(op.get("tipo") or "")
+    st.caption(f"Plantilla contractual: **{plantilla}**")
     st.write(
         {
             "tipo": op["tipo"],
@@ -168,6 +173,7 @@ def _render_ops() -> None:
             "signatura_doc_id": op.get("signatura_doc_id"),
             "signatura_status": op.get("signatura_status"),
             "doc_hash_sha256": op.get("doc_hash_sha256"),
+            "template": TEMPLATE_VERSION,
         }
     )
 
@@ -180,7 +186,11 @@ def _render_ops() -> None:
                     st.error("Falta email o teléfono del firmante en el expediente.")
                 else:
                     pdf = generar_pdf_operacion(op)
-                    result = enviar_a_firmar(op["id"], pdf)
+                    result = enviar_a_firmar(
+                        op["id"],
+                        pdf,
+                        title=f"Finan {op['tipo']} #{op['id']} · {TEMPLATE_VERSION}",
+                    )
                     st.success(f"Enviado. Signatura doc: {result['signatura_doc_id']}")
                     st.rerun()
             except (SignaturaError, ValueError) as exc:
@@ -247,9 +257,9 @@ def _render_ops() -> None:
 
     pdf_dl = generar_pdf_operacion(op)
     st.download_button(
-        "Descargar PDF borrador",
+        f"Descargar contrato PDF ({TEMPLATE_VERSION})",
         data=pdf_dl,
-        file_name=f"finan_op_{op['id']}.pdf",
+        file_name=f"finan_{op.get('tipo')}_op_{op['id']}_{TEMPLATE_VERSION}.pdf",
         mime="application/pdf",
         key="tr_dl_pdf",
     )
