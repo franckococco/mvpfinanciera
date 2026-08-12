@@ -553,9 +553,6 @@ def get_dashboard_metrics() -> dict[str, Any]:
             ORDER BY id DESC LIMIT 5
             """
         ).fetchall()
-        actividad = [dict(r) for r in recientes_f] + [dict(r) for r in recientes_b]
-        actividad.sort(key=lambda x: x.get("creado_en", ""), reverse=True)
-        actividad = actividad[:8]
 
         # Totales históricos para gráfico de composición.
         row = conn.execute(
@@ -571,16 +568,79 @@ def get_dashboard_metrics() -> dict[str, Any]:
         ).fetchone()
         interes_cobrado = float(row["i"])
 
+        # RBF cartera: capital activo (principal de loans ACTIVE) y saldo por cobrar
+        try:
+            row = conn.execute(
+                """
+                SELECT COALESCE(SUM(principal), 0) AS capital,
+                       COALESCE(SUM(total_a_cobrar), 0) AS total,
+                       COUNT(*) AS cantidad
+                FROM rbf_loans
+                WHERE status IN ('ACTIVE', 'OVERDUE')
+                """
+            ).fetchone()
+            cartera_rbf_capital = float(row["capital"])
+            rbf_activos = int(row["cantidad"])
+            row = conn.execute(
+                """
+                SELECT COALESCE(SUM(s.expected_amount - s.collected_amount), 0) AS pendiente
+                FROM rbf_sweeps s
+                JOIN rbf_loans l ON l.id = s.loan_id
+                WHERE l.status IN ('ACTIVE', 'OVERDUE')
+                  AND s.status IN ('PENDING', 'PARTIAL', 'OVERDUE')
+                """
+            ).fetchone()
+            cartera_rbf = float(row["pendiente"])
+            row = conn.execute(
+                """
+                SELECT COALESCE(SUM(s.collected_amount), 0) AS cobrado
+                FROM rbf_sweeps s
+                JOIN rbf_loans l ON l.id = s.loan_id
+                WHERE s.status = 'PAID'
+                  AND s.due_date >= ? AND s.due_date < ?
+                """,
+                (mes_inicio, mes_siguiente),
+            ).fetchone()
+            cobros_rbf_mes = float(row["cobrado"])
+            recientes_r = conn.execute(
+                """
+                SELECT l.id, m.business_name AS comercio, l.principal AS monto,
+                       l.status AS estado, l.creado_en, 'rbf' AS tipo
+                FROM rbf_loans l
+                JOIN rbf_merchants m ON m.id = l.merchant_id
+                ORDER BY l.id DESC LIMIT 5
+                """
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # DB vieja sin tablas RBF todavía
+            cartera_rbf_capital = 0.0
+            cartera_rbf = 0.0
+            rbf_activos = 0
+            cobros_rbf_mes = 0.0
+            recientes_r = []
+
+        actividad = (
+            [dict(r) for r in recientes_f]
+            + [dict(r) for r in recientes_b]
+            + [dict(r) for r in recientes_r]
+        )
+        actividad.sort(key=lambda x: x.get("creado_en", ""), reverse=True)
+        actividad = actividad[:10]
+
     return {
         "cartera_activa_factoring": cartera_factoring,
         "cartera_activa_bnpl": cartera_bnpl,
-        "cartera_activa_total": cartera_factoring + cartera_bnpl,
+        "cartera_activa_rbf": cartera_rbf,
+        "cartera_rbf_capital": cartera_rbf_capital,
+        "cartera_activa_total": cartera_factoring + cartera_bnpl + cartera_rbf,
         "comisiones_mes": comisiones_mes,
         "intereses_bnpl_mes": intereses_bnpl_mes,
-        "ingresos_mes": comisiones_mes + intereses_bnpl_mes,
+        "cobros_rbf_mes": cobros_rbf_mes,
+        "ingresos_mes": comisiones_mes + intereses_bnpl_mes + cobros_rbf_mes,
         "cupones_por_fecha": cupones_por_fecha,
         "cuotas_por_fecha": cuotas_por_fecha,
         "creditos_activos": creditos_activos,
+        "rbf_activos": rbf_activos,
         "ops_factoring_activas": ops_factoring,
         "mes_referencia": hoy.strftime("%Y-%m"),
         "actividad_reciente": actividad,

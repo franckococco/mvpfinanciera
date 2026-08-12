@@ -304,13 +304,26 @@ def sincronizar_firma(operacion_id: int) -> dict[str, Any]:
 
 
 def marcar_desembolsado(operacion_id: int, referencia: str = "") -> dict[str, Any]:
+    from modules.checklist import get_checklist
+
     op = get_operacion(operacion_id)
     if not op:
         raise ValueError("Operación no encontrada.")
     if op["estado"] != "listo_desembolso":
         raise ValueError("Solo se desembolsa en estado listo_desembolso (firma completa).")
+    chk = get_checklist(operacion_id)
+    if not chk["all_ok"]:
+        faltan = [i["label"] for i in chk["items"] if not i["ok"]]
+        raise ValueError(
+            "Checklist incompleto. Falta: " + "; ".join(faltan[:4])
+            + ("…" if len(faltan) > 4 else "")
+        )
     transicionar(operacion_id, "desembolsado", nota=referencia)
-    log_event(operacion_id, "disbursed", {"referencia": referencia})
+    log_event(
+        operacion_id,
+        "disbursed",
+        {"referencia": referencia, "checklist": True},
+    )
     return get_operacion(operacion_id) or {}
 
 

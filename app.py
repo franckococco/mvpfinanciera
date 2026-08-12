@@ -32,7 +32,7 @@ st.set_page_config(
 def render_dashboard() -> None:
     """Dashboard gráfico: KPIs, composición de cartera, vencimientos y actividad."""
     st.header("Dashboard")
-    st.caption("Cartera activa · ingresos del mes · cupones y cuotas por fecha")
+    st.caption("Cartera activa · factoring · RBF · BNPL · ingresos del mes")
 
     metrics = get_dashboard_metrics()
 
@@ -42,7 +42,7 @@ def render_dashboard() -> None:
         kpi_card(
             "Cartera activa",
             fmt_ars(metrics["cartera_activa_total"]),
-            "Factoring + BNPL pendiente",
+            "Factoring + RBF + BNPL",
         )
     with k2:
         kpi_card(
@@ -58,9 +58,9 @@ def render_dashboard() -> None:
         )
     with k4:
         kpi_card(
-            "BNPL activo",
-            f"{metrics['creditos_activos']} créditos",
-            fmt_ars(metrics["cartera_activa_bnpl"]),
+            "RBF activo",
+            f"{metrics.get('rbf_activos', 0)} préstamos",
+            fmt_ars(metrics.get("cartera_activa_rbf", 0)),
         )
 
     st.divider()
@@ -71,24 +71,26 @@ def render_dashboard() -> None:
     with g1:
         st.subheader("Composición de cartera")
         if metrics["cartera_activa_total"] <= 0:
-            st.info("Todavía no hay cartera activa. Registrá operaciones en Factoring o BNPL.")
+            st.info("Todavía no hay cartera activa. Registrá operaciones en Factoring, RBF o BNPL.")
         else:
             fig = px.pie(
-                names=["Factoring", "BNPL"],
+                names=["Factoring", "RBF", "BNPL"],
                 values=[
                     metrics["cartera_activa_factoring"],
+                    metrics.get("cartera_activa_rbf", 0),
                     metrics["cartera_activa_bnpl"],
                 ],
                 hole=0.55,
-                color_discrete_sequence=["#38bdf8", "#f472b6"],
+                color_discrete_sequence=["#38bdf8", "#34d399", "#f472b6"],
             )
             plotly_layout(fig)
             fig.update_traces(textinfo="percent+label", textfont_size=12)
             st.plotly_chart(fig, use_container_width=True)
 
-        m1, m2 = st.columns(2)
+        m1, m2, m3 = st.columns(3)
         m1.metric("Comisiones factoring (mes)", fmt_ars(metrics["comisiones_mes"]))
-        m2.metric("Intereses BNPL (mes)", fmt_ars(metrics["intereses_bnpl_mes"]))
+        m2.metric("Cobros RBF (mes)", fmt_ars(metrics.get("cobros_rbf_mes", 0)))
+        m3.metric("Intereses BNPL (mes)", fmt_ars(metrics["intereses_bnpl_mes"]))
 
     with g2:
         st.subheader("Ingresos históricos cobrados")
@@ -109,6 +111,8 @@ def render_dashboard() -> None:
             plotly_layout(fig_h)
             fig_h.update_layout(showlegend=False)
             st.plotly_chart(fig_h, use_container_width=True)
+        st.metric("BNPL créditos activos", metrics["creditos_activos"])
+        st.metric("Capital RBF colocado", fmt_ars(metrics.get("cartera_rbf_capital", 0)))
 
     st.divider()
 
@@ -189,9 +193,15 @@ def render_dashboard() -> None:
     else:
         rows = []
         for a in actividad:
+            tipo = a["tipo"]
+            label = {
+                "factoring": "Factoring",
+                "bnpl": "BNPL",
+                "rbf": "RBF",
+            }.get(tipo, tipo)
             rows.append(
                 {
-                    "Tipo": "Factoring" if a["tipo"] == "factoring" else "BNPL",
+                    "Tipo": label,
                     "ID": a["id"],
                     "Comercio": a["comercio"],
                     "Monto": a["monto"],

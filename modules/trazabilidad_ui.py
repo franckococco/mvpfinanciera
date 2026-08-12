@@ -10,8 +10,10 @@ import pandas as pd
 import streamlit as st
 
 from modules import signatura
+from modules.checklist import get_checklist, save_checklist
 from modules.database import get_operacion, list_operaciones
 from modules.documents import TEMPLATE_VERSION, generar_pdf_operacion, nombre_plantilla
+from modules.legajo import build_legajo_zip
 from modules.signatura import SignaturaError
 from modules.traceability import (
     ESTADOS,
@@ -177,6 +179,31 @@ def _render_ops() -> None:
         }
     )
 
+    st.markdown("##### Checklist pre-desembolso")
+    chk = get_checklist(op["id"])
+    checks_ui: dict[str, bool] = {}
+    for item in chk["items"]:
+        checks_ui[item["id"]] = st.checkbox(
+            item["label"],
+            value=item["ok"],
+            key=f"chk_{op['id']}_{item['id']}",
+        )
+    c_save, c_status = st.columns([1, 2])
+    with c_save:
+        if st.button("Guardar checklist", key="tr_chk_save"):
+            save_checklist(op["id"], checks_ui)
+            st.success("Checklist guardado.")
+            st.rerun()
+    with c_status:
+        if chk["puede_desembolsar"]:
+            st.success("Listo para desembolsar (firma + checklist OK).")
+        elif chk["all_ok"] and not chk["firma_lista"]:
+            st.warning("Checklist OK · falta firma completa (estado listo_desembolso).")
+        elif chk["firma_lista"] and not chk["all_ok"]:
+            st.warning("Firma lista · falta completar checklist.")
+        else:
+            st.info("Completá checklist y firma antes de desembolsar.")
+
     a1, a2, a3, a4 = st.columns(4)
 
     with a1:
@@ -208,6 +235,8 @@ def _render_ops() -> None:
     with a3:
         if st.button("Desembolsar", key="tr_disb"):
             try:
+                # Persistir checks actuales de la UI antes de validar
+                save_checklist(op["id"], checks_ui)
                 marcar_desembolsado(op["id"], referencia="manual_ui")
                 st.success("Marcado como desembolsado.")
                 st.rerun()
@@ -255,11 +284,26 @@ def _render_ops() -> None:
             )
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-    pdf_dl = generar_pdf_operacion(op)
-    st.download_button(
-        f"Descargar contrato PDF ({TEMPLATE_VERSION})",
-        data=pdf_dl,
-        file_name=f"finan_{op.get('tipo')}_op_{op['id']}_{TEMPLATE_VERSION}.pdf",
-        mime="application/pdf",
-        key="tr_dl_pdf",
-    )
+    d1, d2 = st.columns(2)
+    with d1:
+        pdf_dl = generar_pdf_operacion(op)
+        st.download_button(
+            f"Descargar contrato PDF ({TEMPLATE_VERSION})",
+            data=pdf_dl,
+            file_name=f"finan_{op.get('tipo')}_op_{op['id']}_{TEMPLATE_VERSION}.pdf",
+            mime="application/pdf",
+            key="tr_dl_pdf",
+        )
+    with d2:
+        try:
+            zip_bytes, zip_name = build_legajo_zip(op["id"])
+            st.download_button(
+                "Descargar legajo completo (.zip)",
+                data=zip_bytes,
+                file_name=zip_name,
+                mime="application/zip",
+                key="tr_dl_zip",
+            )
+        except Exception as exc:  # noqa: BLE001
+            st.caption(f"Legajo no disponible: {exc}")
+
