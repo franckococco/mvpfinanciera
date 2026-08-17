@@ -120,7 +120,11 @@ def _parties_table(op: dict[str, Any], styles) -> Table:
         ],
         [
             Paragraph("Financiera / Cesionaria", styles["small"]),
-            Paragraph("FINAN (plataforma de adelantos y factoring) — datos a completar en contrato marco.", styles["small"]),
+            Paragraph(
+                "FINAN (préstamos al comercio y créditos al cliente del comercio) — "
+                "datos a completar en contrato marco.",
+                styles["small"],
+            ),
         ],
     ]
     t = Table(data, colWidths=[5 * cm, 12 * cm])
@@ -243,7 +247,7 @@ def _build_rbf(op: dict[str, Any], extra: dict[str, Any]) -> list:
     cuota = p.get("cuota_mensual", "—")
     garant = p.get("garantias") or {}
 
-    story = _header_block(styles, "CONTRATO DE ADELANTO DE FLUJO (REVENUE-BASED FINANCING)", op)
+    story = _header_block(styles, "CONTRATO DE PRÉSTAMO AL COMERCIO", op)
     story.append(Paragraph("Partes", styles["h2"]))
     story.append(_parties_table(op, styles))
     story.append(Spacer(1, 0.35 * cm))
@@ -251,10 +255,12 @@ def _build_rbf(op: dict[str, Any], extra: dict[str, Any]) -> list:
     story.append(Paragraph("Objeto", styles["h2"]))
     story.append(
         Paragraph(
-            f"FINAN otorga al Comercio un adelanto de flujo de caja por capital "
+            f"FINAN otorga al Comercio un préstamo por capital "
             f"<b>$ {monto:,.2f} ARS</b>, a tasa mensual <b>{rate}%</b>, plazo <b>{months}</b> mes(es), "
-            f"método de cálculo <b>{calc}</b>, frecuencia de barrido <b>{freq}</b>. "
-            f"Cuota mensual objetivo: <b>{cuota}</b> · Total a cobrar estimado: <b>{total}</b>.",
+            f"método de cálculo <b>{calc}</b>, frecuencia de cobro <b>{freq}</b>. "
+            f"Cuota mensual objetivo: <b>{cuota}</b> · Total a cobrar estimado: <b>{total}</b>. "
+            f"El Comercio se obliga a restituir el capital y accesorios mediante retenciones "
+            f"sobre sus ventas electrónicas.",
             styles["body"],
         )
     )
@@ -281,7 +287,7 @@ def _build_rbf(op: dict[str, Any], extra: dict[str, Any]) -> list:
             styles,
             op,
             total_num,
-            "total adeudado del adelanto de flujo (capital + intereses según método pactado)",
+            "total adeudado del préstamo al comercio (capital + intereses según método pactado)",
         )
     )
     return story
@@ -291,16 +297,17 @@ def _build_bnpl(op: dict[str, Any], extra: dict[str, Any]) -> list:
     styles = _styles()
     p = {**_payload(op), **extra}
     monto = float(op.get("monto") or 0)
-    story = _header_block(styles, "CONTRATO / PAGARÉ — CRÉDITO BNPL", op)
+    story = _header_block(styles, "CONTRATO / PAGARÉ — CRÉDITO AL CLIENTE DEL COMERCIO", op)
     story.append(Paragraph("Partes", styles["h2"]))
     story.append(_parties_table(op, styles))
     story.append(Spacer(1, 0.35 * cm))
     story.append(
         Paragraph(
-            f"Crédito de consumo / BNPL por capital <b>$ {monto:,.2f} ARS</b>. "
+            f"Crédito al cliente del comercio por capital <b>$ {monto:,.2f} ARS</b>. "
             f"Cliente DNI: {p.get('dni_cliente', '—')} · {p.get('nombre_cliente', '')}. "
             f"Cuotas: {p.get('cuotas', '—')} · Cuota: {p.get('cuota_mensual', '—')} · "
-            f"Total: {p.get('total_a_pagar', '—')}.",
+            f"Total: {p.get('total_a_pagar', '—')}. "
+            f"El crédito opera dentro de la red del comercio (tarjeta cerrada / compra en cuotas en el local).",
             styles["body"],
         )
     )
@@ -314,7 +321,7 @@ def _build_bnpl(op: dict[str, Any], extra: dict[str, Any]) -> list:
     )
     story.extend(_clausulas_comunes(styles))
     total = float(p.get("total_a_pagar") or monto)
-    story.extend(_pagare_section(styles, op, total, "total del crédito BNPL"))
+    story.extend(_pagare_section(styles, op, total, "total del crédito al cliente del comercio"))
     return story
 
 
@@ -367,7 +374,7 @@ def generar_pdf_operacion(op: dict[str, Any], extra: dict[str, Any] | None = Non
 def nombre_plantilla(tipo: str) -> str:
     return {
         "factoring": f"Cesión + Pagaré ({TEMPLATE_VERSION})",
-        "rbf": f"Adelanto de Flujo + Pagaré ({TEMPLATE_VERSION})",
-        "credito_comercio": f"Crédito comercio + Pagaré ({TEMPLATE_VERSION})",
-        "bnpl": f"BNPL + Pagaré ({TEMPLATE_VERSION})",
+        "rbf": f"Préstamo al comercio + Pagaré ({TEMPLATE_VERSION})",
+        "credito_comercio": f"Préstamo al comercio + Pagaré ({TEMPLATE_VERSION})",
+        "bnpl": f"Crédito al cliente + Pagaré ({TEMPLATE_VERSION})",
     }.get(tipo, f"Documento ({TEMPLATE_VERSION})")

@@ -18,6 +18,7 @@ from modules.signatura import SignaturaError
 from modules.traceability import (
     ESTADOS,
     TIPOS,
+    TIPOS_ACTIVOS,
     marcar_desembolsado,
     resumen_cartera_trazabilidad,
     sincronizar_firma,
@@ -31,7 +32,7 @@ from modules.ui import fmt_ars, kpi_card
 def render_trazabilidad() -> None:
     st.header("Trazabilidad")
     st.caption(
-        f"Expediente único · cupón · RBF · BNPL · firma Signatura Flex · "
+        f"Expediente · préstamo al comercio · crédito al cliente · firma Signatura · "
         f"plantillas {TEMPLATE_VERSION}"
     )
 
@@ -111,7 +112,9 @@ def _render_ops() -> None:
     with f1:
         filtro_tipo = st.selectbox(
             "Tipo",
-            options=["todos"] + list(TIPOS.keys()),
+            options=["todos"] + list(TIPOS_ACTIVOS) + [
+                k for k in TIPOS if k not in TIPOS_ACTIVOS
+            ],
             format_func=lambda x: "Todos" if x == "todos" else TIPOS.get(x, x),
             key="tr_tipo",
         )
@@ -129,8 +132,9 @@ def _render_ops() -> None:
 
     if not ops:
         st.info(
-            "Todavía no hay expedientes. Creá uno desde Factoring, Crédito al comercio o BNPL "
-            "(al registrar se abre el expediente en borrador)."
+            "Todavía no hay expedientes. Registrá un préstamo al comercio o un crédito "
+            "al cliente: se abre el expediente en borrador. Después generá el PDF, "
+            "envialo a firmar y recién ahí desembolsá."
         )
         return
 

@@ -1,5 +1,5 @@
 """
-UI — Adelanto de Flujo (Revenue-Based Financing).
+UI — Préstamo al comercio (cobro por porcentaje de ventas).
 """
 
 from __future__ import annotations
@@ -37,10 +37,11 @@ from modules.ui import fmt_ars, kpi_card, result_strip
 
 
 def render_rbf() -> None:
-    st.header("Adelanto de Flujo (RBF)")
+    st.header("Préstamo al comercio")
     st.caption(
-        "Crédito al comercio cobrado por barridos sobre ventas digitales · "
-        "tasa plana vs francés · respiro interno · garantías"
+        "Se entrega un monto de una vez y se cobra un porcentaje de las ventas "
+        "electrónicas del local. Contrato y pagaré se firman en Trazabilidad "
+        "antes de desembolsar."
     )
     tab_sim, tab_alta, tab_cart = st.tabs(
         ["Simular", "Alta préstamo", "Cartera & cobros"]
@@ -345,15 +346,16 @@ def _render_alta() -> None:
             guarantees,
         )
         st.success(
-            f"Préstamo RBF #{loan_id} · expediente #{exp_id} · "
-            f"{len(sweeps)} barridos. Firmá en **Trazabilidad** antes de desembolsar."
+            f"Préstamo #{loan_id} · expediente #{exp_id} · "
+            f"{len(sweeps)} barridos. Generá el contrato y firmá en **Trazabilidad** "
+            "antes de desembolsar."
         )
 
 
 def _render_cartera() -> None:
     loans = list_rbf_loans()
     if not loans:
-        st.info("Sin préstamos RBF. Creá uno en Alta.")
+        st.info("Sin préstamos al comercio. Creá uno en Alta.")
         return
 
     st.dataframe(

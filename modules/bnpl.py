@@ -1,8 +1,8 @@
 """
-Módulo B — Créditos BNPL (Buy Now, Pay Later / Consumo en comercios).
+Crédito al cliente del comercio (compra en cuotas dentro de la red del local).
 
-Simulación en vivo con sistema francés, cronograma interactivo,
-pagaré digital para WhatsApp y gestión de cobro de cuotas.
+Simulación en vivo con sistema francés, cronograma, pagaré y cobro de cuotas.
+La firma con validez se hace en Trazabilidad (Signatura).
 """
 
 from __future__ import annotations
@@ -125,7 +125,7 @@ def generar_pagare_whatsapp(
         for f in cronograma
     )
 
-    texto = f"""📄 *PAGARÉ DIGITAL — COMPRA EN CUOTAS (BNPL)*
+    texto = f"""📄 *PAGARÉ DIGITAL — CRÉDITO AL CLIENTE DEL COMERCIO*
 
 Yo, *{nombre_mostrar}*, DNI *{dni}*, declaro deber y me comprometo a pagar a la orden de la Financiera la suma de *{fmt_ars(total_a_pagar)}*, en concepto de la compra realizada en *{comercio}* por un valor de producto de {fmt_ars(monto)}.
 
@@ -144,7 +144,7 @@ Yo, *{nombre_mostrar}*, DNI *{dni}*, declaro deber y me comprometo a pagar a la 
 Al aceptar este mensaje, reconozco la deuda y autorizo el débito/cobro de las cuotas en las fechas indicadas.
 
 Fecha de emisión: {date.today().isoformat()}
-— Financiera · Pagaré Digital BNPL —
+— Financiera · Pagaré Digital · crédito al cliente —
 """
     return texto.strip()
 
@@ -278,7 +278,11 @@ def _render_simulador() -> None:
             cronograma=cronograma,
         )
 
-        with st.expander("Pagaré Digital (WhatsApp)", expanded=False):
+        with st.expander("Borrador de pagaré (texto para compartir)", expanded=False):
+            st.caption(
+                "Esto es un texto auxiliar. La firma con validez se hace en Trazabilidad "
+                "con Signatura, sobre el PDF del expediente."
+            )
             st.code(pagare, language=None)
             wa_url = f"https://wa.me/?text={quote(pagare)}"
             st.link_button("Abrir en WhatsApp", wa_url, use_container_width=True)
@@ -330,14 +334,14 @@ def _render_simulador() -> None:
                 )
                 st.success(
                     f"Crédito #{credito_id} · expediente #{exp_id} · cuota {fmt_ars(cuota)}. "
-                    "Firmá desde **Trazabilidad**."
+                    "Generá el contrato y firmá en **Trazabilidad** antes de desembolsar."
                 )
                 st.balloons()
 
 
 def _render_cartera() -> None:
     """Lista de créditos + cobro interactivo de cuotas."""
-    st.subheader("Cartera BNPL")
+    st.subheader("Cartera de créditos al cliente")
 
     filtro = st.segmented_control(
         "Estado",
@@ -472,8 +476,11 @@ def _render_cartera() -> None:
 
 def render_bnpl() -> None:
     """Vista principal del módulo BNPL con pestañas interactivas."""
-    st.header("Créditos BNPL")
-    st.caption("Consumo en comercios · simulación en vivo · pagaré WhatsApp · cobro de cuotas")
+    st.header("Crédito al cliente del comercio")
+    st.caption(
+        "El cliente compra en el local y paga en cuotas. No es una tarjeta de red "
+        "abierta. Contrato y pagaré se firman en Trazabilidad antes de desembolsar."
+    )
 
     tab_sim, tab_cart = st.tabs(["Simular & Registrar", "Cartera & Cobros"])
     with tab_sim:

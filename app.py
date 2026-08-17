@@ -1,10 +1,11 @@
 """
-Finan — Plataforma MVP de Factoring y Créditos BNPL.
+Finan — préstamo al comercio y crédito al cliente del comercio.
 
 Punto de entrada principal (Streamlit). Navegación por sidebar:
-  1. Dashboard / Admin
-  2. Adelanto de Cupones (Factoring)
-  3. Créditos BNPL
+  1. Dashboard
+  2. Préstamo al comercio
+  3. Crédito al cliente del comercio
+  4. Trazabilidad (contratos, firma, desembolso)
 """
 
 from __future__ import annotations
@@ -15,14 +16,13 @@ import streamlit as st
 
 from modules.bnpl import render_bnpl
 from modules.database import get_dashboard_metrics, init_db
-from modules.factoring import render_factoring
 from modules.rbf_ui import render_rbf
 from modules.trazabilidad_ui import render_trazabilidad
 from modules.ui import fmt_ars, inject_styles, kpi_card, plotly_layout
 
 
 st.set_page_config(
-    page_title="Finan · Factoring & BNPL",
+    page_title="Finan · Préstamos y créditos",
     page_icon="💰",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -30,19 +30,21 @@ st.set_page_config(
 
 
 def render_dashboard() -> None:
-    """Dashboard gráfico: KPIs, composición de cartera, vencimientos y actividad."""
+    """Dashboard: cartera de los dos productos y vencimientos."""
     st.header("Dashboard")
-    st.caption("Cartera activa · factoring · RBF · BNPL · ingresos del mes")
+    st.caption(
+        "Préstamo al comercio · crédito al cliente del comercio · ingresos del mes. "
+        "El desembolso se habilita en Trazabilidad después de firmar."
+    )
 
     metrics = get_dashboard_metrics()
 
-    # --- KPI strip ---
     k1, k2, k3, k4 = st.columns(4)
     with k1:
         kpi_card(
             "Cartera activa",
             fmt_ars(metrics["cartera_activa_total"]),
-            "Factoring + RBF + BNPL",
+            "Comercio + cliente",
         )
     with k2:
         kpi_card(
@@ -52,87 +54,85 @@ def render_dashboard() -> None:
         )
     with k3:
         kpi_card(
-            "Factoring activo",
-            f"{metrics['ops_factoring_activas']} ops",
-            fmt_ars(metrics["cartera_activa_factoring"]),
+            "Préstamos al comercio",
+            f"{metrics.get('rbf_activos', 0)} activos",
+            fmt_ars(metrics.get("cartera_activa_rbf", 0)),
         )
     with k4:
         kpi_card(
-            "RBF activo",
-            f"{metrics.get('rbf_activos', 0)} préstamos",
-            fmt_ars(metrics.get("cartera_activa_rbf", 0)),
+            "Créditos a clientes",
+            f"{metrics['creditos_activos']} activos",
+            fmt_ars(metrics["cartera_activa_bnpl"]),
         )
 
     st.divider()
 
-    # --- Gráficos principales ---
     g1, g2 = st.columns(2)
 
     with g1:
         st.subheader("Composición de cartera")
         if metrics["cartera_activa_total"] <= 0:
-            st.info("Todavía no hay cartera activa. Registrá operaciones en Factoring, RBF o BNPL.")
+            st.info(
+                "Todavía no hay cartera activa. Registrá un préstamo al comercio "
+                "o un crédito al cliente desde el menú."
+            )
         else:
             fig = px.pie(
-                names=["Factoring", "RBF", "BNPL"],
+                names=["Préstamo al comercio", "Crédito al cliente"],
                 values=[
-                    metrics["cartera_activa_factoring"],
                     metrics.get("cartera_activa_rbf", 0),
                     metrics["cartera_activa_bnpl"],
                 ],
                 hole=0.55,
-                color_discrete_sequence=["#38bdf8", "#34d399", "#f472b6"],
+                color_discrete_sequence=["#34d399", "#f472b6"],
             )
             plotly_layout(fig)
             fig.update_traces(textinfo="percent+label", textfont_size=12)
             st.plotly_chart(fig, use_container_width=True)
 
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Comisiones factoring (mes)", fmt_ars(metrics["comisiones_mes"]))
-        m2.metric("Cobros RBF (mes)", fmt_ars(metrics.get("cobros_rbf_mes", 0)))
-        m3.metric("Intereses BNPL (mes)", fmt_ars(metrics["intereses_bnpl_mes"]))
+        m1, m2 = st.columns(2)
+        m1.metric("Cobros préstamo comercio (mes)", fmt_ars(metrics.get("cobros_rbf_mes", 0)))
+        m2.metric("Intereses crédito cliente (mes)", fmt_ars(metrics["intereses_bnpl_mes"]))
 
     with g2:
         st.subheader("Ingresos históricos cobrados")
         hist_vals = [
-            metrics["ganancia_hist_factoring"],
+            metrics.get("cobrado_hist_rbf", 0),
             metrics["interes_cobrado_bnpl"],
         ]
         if sum(hist_vals) <= 0:
             st.info("Aún no hay ingresos históricos registrados.")
         else:
             fig_h = px.bar(
-                x=["Comisiones Factoring", "Intereses BNPL"],
+                x=["Barridos comercio", "Intereses cliente"],
                 y=hist_vals,
-                color=["Comisiones Factoring", "Intereses BNPL"],
-                color_discrete_sequence=["#fbbf24", "#f472b6"],
+                color=["Barridos comercio", "Intereses cliente"],
+                color_discrete_sequence=["#34d399", "#f472b6"],
                 labels={"x": "", "y": "ARS"},
             )
             plotly_layout(fig_h)
             fig_h.update_layout(showlegend=False)
             st.plotly_chart(fig_h, use_container_width=True)
-        st.metric("BNPL créditos activos", metrics["creditos_activos"])
-        st.metric("Capital RBF colocado", fmt_ars(metrics.get("cartera_rbf_capital", 0)))
+        st.metric("Capital colocado al comercio", fmt_ars(metrics.get("cartera_rbf_capital", 0)))
 
     st.divider()
 
-    # --- Vencimientos ---
     v1, v2 = st.columns(2)
 
     with v1:
-        st.subheader("Cupones a cobrar por fecha")
-        cupones = metrics["cupones_por_fecha"]
-        if not cupones:
-            st.info("Sin cupones activos.")
+        st.subheader("Barridos del préstamo al comercio")
+        barridos = metrics.get("barridos_por_fecha") or []
+        if not barridos:
+            st.info("Sin barridos pendientes.")
         else:
-            df_c = pd.DataFrame(cupones)
+            df_c = pd.DataFrame(barridos)
             fig_c = px.bar(
                 df_c,
                 x="fecha",
                 y="total",
                 text="cantidad",
-                labels={"fecha": "Liquidación", "total": "ARS", "cantidad": "Ops"},
-                color_discrete_sequence=["#38bdf8"],
+                labels={"fecha": "Vencimiento", "total": "ARS", "cantidad": "Barridos"},
+                color_discrete_sequence=["#34d399"],
             )
             plotly_layout(fig_c)
             fig_c.update_traces(textposition="outside")
@@ -153,7 +153,7 @@ def render_dashboard() -> None:
             )
 
     with v2:
-        st.subheader("Cuotas BNPL a vencer")
+        st.subheader("Cuotas del crédito al cliente")
         cuotas = metrics["cuotas_por_fecha"]
         if not cuotas:
             st.info("Sin cuotas pendientes.")
@@ -189,15 +189,14 @@ def render_dashboard() -> None:
     st.subheader("Actividad reciente")
     actividad = metrics["actividad_reciente"]
     if not actividad:
-        st.info("Sin operaciones todavía. Empezá por Factoring o BNPL desde el menú.")
+        st.info("Sin operaciones todavía. Empezá por un préstamo o un crédito desde el menú.")
     else:
         rows = []
         for a in actividad:
             tipo = a["tipo"]
             label = {
-                "factoring": "Factoring",
-                "bnpl": "BNPL",
-                "rbf": "RBF",
+                "bnpl": "Crédito al cliente",
+                "rbf": "Préstamo al comercio",
             }.get(tipo, tipo)
             rows.append(
                 {
@@ -227,7 +226,7 @@ def main() -> None:
     with st.sidebar:
         st.markdown('<p class="finan-brand">Finan</p>', unsafe_allow_html=True)
         st.markdown(
-            '<p class="finan-sub">Factoring · RBF · BNPL</p>',
+            '<p class="finan-sub">Préstamo al comercio · Crédito al cliente</p>',
             unsafe_allow_html=True,
         )
         st.divider()
@@ -236,9 +235,8 @@ def main() -> None:
             "Menú",
             options=[
                 "Dashboard",
-                "Adelanto de Cupones",
-                "Adelanto de Flujo (RBF)",
-                "Créditos BNPL",
+                "Préstamo al comercio",
+                "Crédito al cliente del comercio",
                 "Trazabilidad",
             ],
             index=0,
@@ -254,11 +252,9 @@ def main() -> None:
 
     if pagina == "Dashboard":
         render_dashboard()
-    elif pagina == "Adelanto de Cupones":
-        render_factoring()
-    elif pagina == "Adelanto de Flujo (RBF)":
+    elif pagina == "Préstamo al comercio":
         render_rbf()
-    elif pagina == "Créditos BNPL":
+    elif pagina == "Crédito al cliente del comercio":
         render_bnpl()
     elif pagina == "Trazabilidad":
         render_trazabilidad()

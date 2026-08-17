@@ -2,7 +2,7 @@
 Módulo de persistencia local con SQLite.
 
 Gestiona el esquema, la inicialización de la base de datos y las operaciones
-CRUD necesarias para Factoring, BNPL y el Dashboard administrativo.
+CRUD para préstamo al comercio, crédito al cliente y el Dashboard.
 """
 
 from __future__ import annotations
@@ -38,8 +38,10 @@ def init_db() -> None:
     Crea las tablas si no existen.
 
     Tablas:
-      - factoring_ops / bnpl_*: módulos operativos existentes.
-      - operaciones: expediente unificado (cupón / crédito comercio / BNPL).
+      - bnpl_*: crédito al cliente del comercio.
+      - rbf_*: préstamo al comercio (barridos sobre ventas).
+      - operaciones: expediente unificado (firma + desembolso).
+      - factoring_ops: legado, fuera del producto.
       - audit_events: cadena de hashes append-only.
       - app_settings: config local (ej. API key Signatura).
     """
@@ -444,8 +446,8 @@ def get_dashboard_metrics() -> dict[str, Any]:
     """
     Calcula métricas agregadas para el panel administrativo.
 
-    Retorna cartera, comisiones, cupones por fecha, series para gráficos
-    y actividad reciente.
+    Retorna cartera de préstamo al comercio y crédito al cliente,
+    vencimientos y actividad reciente.
     """
     hoy = date.today()
     mes_inicio = hoy.replace(day=1).isoformat()
@@ -536,15 +538,6 @@ def get_dashboard_metrics() -> dict[str, Any]:
         ).fetchall()
         cuotas_por_fecha = [dict(r) for r in rows]
 
-        # Actividad reciente (últimas 8 operaciones de ambos tipos).
-        recientes_f = conn.execute(
-            """
-            SELECT id, comercio, monto_bruto AS monto, estado, creado_en,
-                   'factoring' AS tipo
-            FROM factoring_ops
-            ORDER BY id DESC LIMIT 5
-            """
-        ).fetchall()
         recientes_b = conn.execute(
             """
             SELECT id, comercio, monto_producto AS monto, estado, creado_en,
@@ -602,6 +595,29 @@ def get_dashboard_metrics() -> dict[str, Any]:
                 (mes_inicio, mes_siguiente),
             ).fetchone()
             cobros_rbf_mes = float(row["cobrado"])
+            row = conn.execute(
+                """
+                SELECT COALESCE(SUM(s.collected_amount), 0) AS cobrado
+                FROM rbf_sweeps s
+                WHERE s.status = 'PAID'
+                """
+            ).fetchone()
+            cobrado_hist_rbf = float(row["cobrado"])
+            rows = conn.execute(
+                """
+                SELECT s.due_date AS fecha,
+                       COUNT(*) AS cantidad,
+                       SUM(s.expected_amount - s.collected_amount) AS total
+                FROM rbf_sweeps s
+                JOIN rbf_loans l ON l.id = s.loan_id
+                WHERE l.status IN ('ACTIVE', 'OVERDUE')
+                  AND s.status IN ('PENDING', 'PARTIAL', 'OVERDUE')
+                GROUP BY s.due_date
+                ORDER BY s.due_date ASC
+                LIMIT 12
+                """
+            ).fetchall()
+            barridos_por_fecha = [dict(r) for r in rows]
             recientes_r = conn.execute(
                 """
                 SELECT l.id, m.business_name AS comercio, l.principal AS monto,
@@ -617,11 +633,12 @@ def get_dashboard_metrics() -> dict[str, Any]:
             cartera_rbf = 0.0
             rbf_activos = 0
             cobros_rbf_mes = 0.0
+            cobrado_hist_rbf = 0.0
+            barridos_por_fecha = []
             recientes_r = []
 
         actividad = (
-            [dict(r) for r in recientes_f]
-            + [dict(r) for r in recientes_b]
+            [dict(r) for r in recientes_b]
             + [dict(r) for r in recientes_r]
         )
         actividad.sort(key=lambda x: x.get("creado_en", ""), reverse=True)
@@ -632,12 +649,14 @@ def get_dashboard_metrics() -> dict[str, Any]:
         "cartera_activa_bnpl": cartera_bnpl,
         "cartera_activa_rbf": cartera_rbf,
         "cartera_rbf_capital": cartera_rbf_capital,
-        "cartera_activa_total": cartera_factoring + cartera_bnpl + cartera_rbf,
+        "cartera_activa_total": cartera_bnpl + cartera_rbf,
         "comisiones_mes": comisiones_mes,
         "intereses_bnpl_mes": intereses_bnpl_mes,
         "cobros_rbf_mes": cobros_rbf_mes,
-        "ingresos_mes": comisiones_mes + intereses_bnpl_mes + cobros_rbf_mes,
+        "ingresos_mes": intereses_bnpl_mes + cobros_rbf_mes,
         "cupones_por_fecha": cupones_por_fecha,
+        "barridos_por_fecha": barridos_por_fecha,
+        "cobrado_hist_rbf": cobrado_hist_rbf,
         "cuotas_por_fecha": cuotas_por_fecha,
         "creditos_activos": creditos_activos,
         "rbf_activos": rbf_activos,
@@ -797,7 +816,7 @@ def list_audit_events(operacion_id: int) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# RBF — Adelanto de Flujo
+# Préstamo al comercio (barridos sobre ventas)
 # ---------------------------------------------------------------------------
 
 def insert_rbf_merchant(data: dict[str, Any]) -> int:

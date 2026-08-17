@@ -1,11 +1,12 @@
-# Finan — MVP Factoring, RBF & BNPL
+# Finan — préstamo al comercio y crédito al cliente
 
-Plataforma web en **Streamlit** para operar:
+Plataforma web en **Streamlit** para operar dos productos:
 
-- **Factoring**: adelanto de cupones (comisión, TNA/TEA, mercado, Signatura)
-- **Adelanto de Flujo (RBF)**: crédito al comercio cobrado por barridos (francés/plana)
-- **BNPL**: créditos de consumo en comercios
-- **Trazabilidad**: expediente + audit log + firma **Signatura Flex**
+- **Préstamo al comercio**: se entrega un monto de una vez y se cobra un porcentaje de las ventas electrónicas del local.
+- **Crédito al cliente del comercio**: el cliente compra en el local y paga en cuotas (red cerrada del comercio, no tarjeta de red abierta).
+- **Trazabilidad**: expediente, contrato, pagaré, firma **Signatura Flex**, checklist y desembolso.
+
+El adelanto de cupones (factoring) quedó fuera del producto.
 
 ## Estructura
 
@@ -15,15 +16,14 @@ finan/
 ├── requirements.txt
 └── modules/
     ├── database.py
-    ├── factoring.py
-    ├── market_rates.py
     ├── rbf_engine.py
     ├── rbf_ui.py
-    ├── credito_comercio.py   # legado simple
     ├── bnpl.py
     ├── traceability.py
     ├── signatura.py
     ├── documents.py
+    ├── checklist.py
+    ├── legajo.py
     ├── trazabilidad_ui.py
     └── ui.py
 ```
@@ -42,8 +42,8 @@ python -m venv .venv
 ```
 
 1. **Trazabilidad → Signatura / Config**: pegá la API key (o `SIGNATURA_API_KEY`).
-2. Factoring / RBF / BNPL: registran expediente en `borrador`.
-3. Trazabilidad: PDF → Signatura → sync → desembolsar.
-4. RBF v1: barridos se registran manualmente (integración procesadora después).
+2. Registrá un préstamo al comercio o un crédito al cliente: se abre el expediente en `borrador`.
+3. Trazabilidad: PDF → enviar a firmar → sincronizar → checklist → desembolsar.
+4. Cobros: barridos del préstamo y cuotas del cliente se registran a mano (integración con procesadora después).
 
 La base `finan.db` se crea automáticamente (no se versiona).

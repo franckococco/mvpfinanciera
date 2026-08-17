@@ -2,9 +2,9 @@
 Motor de trazabilidad de operaciones Finan.
 
 Tipos:
-  - factoring: adelanto / cesión de cupón
-  - credito_comercio: línea o préstamo al comercio
-  - bnpl: crédito al consumidor en comercio
+  - rbf: préstamo al comercio (cobro por % de ventas)
+  - bnpl: crédito al cliente del comercio
+  - factoring / credito_comercio: legado, fuera del producto
 
 Estados (firma Signatura + ciclo de cobro):
   borrador → pendiente_firma → firmado → listo_desembolso
@@ -33,11 +33,13 @@ from modules.database import (
 # ---------------------------------------------------------------------------
 
 TIPOS = {
-    "factoring": "Factoring (cupón / cesión)",
-    "credito_comercio": "Crédito al comercio",
-    "rbf": "Adelanto de Flujo (RBF)",
-    "bnpl": "BNPL (consumo)",
+    "rbf": "Préstamo al comercio",
+    "bnpl": "Crédito al cliente del comercio",
+    "factoring": "Legado: adelanto de cupones",
+    "credito_comercio": "Legado: crédito simple",
 }
+
+TIPOS_ACTIVOS = ("rbf", "bnpl")
 
 ESTADOS = [
     "borrador",

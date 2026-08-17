@@ -17,7 +17,7 @@ from modules.traceability import _utc_now, log_event
 CHECKLIST_ITEMS: list[tuple[str, str]] = [
     ("cuit_activo", "CUIT del comercio verificado (activo / vigente)"),
     ("cbu_titular", "CBU/CVU de destino concuerda con el titular / razón social"),
-    ("lote_u_origen", "Cupón/lote o flujo de ventas validado en origen (no solo PDF)"),
+    ("lote_u_origen", "Origen económico validado (ventas del comercio o comprobante de la compra)"),
     ("contrato_versionado", "Contrato/pagaré generado con plantilla vigente"),
     ("garantias_ok", "Garantías cargadas (pagaré / eCheq / fiador según perfil)"),
     ("capacidad_pago", "Retención o comisión deja margen viable (no alerta bloqueante)"),
