@@ -13,8 +13,10 @@ import streamlit as st
 from modules.database import (
     get_rbf_grace,
     get_rbf_loan,
+    get_rbf_merchant,
     insert_rbf_loan,
     insert_rbf_merchant,
+    list_mp_sales,
     list_rbf_loans,
     list_rbf_merchants,
     list_rbf_sweeps,
@@ -23,6 +25,7 @@ from modules.database import (
     update_rbf_loan_status,
     update_rbf_sweep,
 )
+from modules import mercadopago
 from modules.rbf_engine import (
     RETENTION_ALERT_PCT,
     build_sweep_schedule,
@@ -39,12 +42,11 @@ from modules.ui import fmt_ars, kpi_card, result_strip
 def render_rbf() -> None:
     st.header("Préstamo al comercio")
     st.caption(
-        "Se entrega un monto de una vez y se cobra un porcentaje de las ventas "
-        "electrónicas del local. Contrato y pagaré se firman en Trazabilidad "
-        "antes de desembolsar."
+        "Prestás al local y cobrás en la caja: el cliente paga ahí mismo con Mercado Pago "
+        "(QR o link). La venta se parte sola. Firmar en Trazabilidad antes de desembolsar."
     )
-    tab_sim, tab_alta, tab_cart = st.tabs(
-        ["Simular", "Alta préstamo", "Cartera & cobros"]
+    tab_sim, tab_alta, tab_cart, tab_mp = st.tabs(
+        ["Simular", "Alta préstamo", "Cartera & cobros", "Cobro en el local"]
     )
     with tab_sim:
         _render_sim()
@@ -52,6 +54,8 @@ def render_rbf() -> None:
         _render_alta()
     with tab_cart:
         _render_cartera()
+    with tab_mp:
+        _render_cobro_local()
 
 
 def _render_sim() -> None:
@@ -496,3 +500,191 @@ def _render_cartera() -> None:
             )
         st.success(f"Estado → {new_status}")
         st.rerun()
+
+
+def _render_cobro_local() -> None:
+    """El cliente paga en la caja con Mercado Pago; Finan se queda la retención."""
+    st.subheader("Cobrar una venta en el local")
+    st.markdown(
+        "El cliente **no se lleva un link a la casa**. Paga en el mostrador: el cajero "
+        "abre el checkout de Mercado Pago (QR o celular) y la venta se parte sola."
+    )
+
+    st.info(
+        "**Ejemplo real.** Prestaste **$1.000.000** a la panadería. Pactaste **15%** de cada cobro. "
+        "Entra un cliente, pide facturas por **$10.000** y paga con Mercado Pago en la caja. "
+        "Vos te quedás **$1.500**. Al local le queda **$8.500** menos la comisión de Mercado Pago "
+        "(si pagó con crédito al instante, Mercado Pago se lleva ~6,29% + IVA sobre los $10.000). "
+        "El cliente se va con el pan. Nadie transfiere después."
+    )
+
+    if not mercadopago.is_configured():
+        st.warning(
+            "Faltan las credenciales de Mercado Pago. Cargalas en **Trazabilidad → Signatura / Config** "
+            "(abajo, sección Mercado Pago). Creá la app en "
+            "[tus integraciones](https://www.mercadopago.com.ar/developers/panel/app) "
+            "y poné como URL de redirección exactamente: "
+            f"`{mercadopago.get_redirect_uri()}`"
+        )
+        return
+
+    merchants = list_rbf_merchants()
+    if not merchants:
+        st.info("Primero cargá un comercio en **Alta préstamo**.")
+        return
+
+    labels = {f"#{m['id']} · {m['business_name']}": m["id"] for m in merchants}
+    pick = st.selectbox("Comercio", list(labels.keys()), key="mp_merch")
+    merchant_id = labels[pick]
+    merchant = get_rbf_merchant(merchant_id)
+    loans = [
+        l
+        for l in list_rbf_loans()
+        if l["merchant_id"] == merchant_id and l["status"] in ("ACTIVE", "OVERDUE")
+    ]
+
+    linked = mercadopago.merchant_linked(merchant)
+    if linked:
+        st.success(
+            f"Mercado Pago vinculado"
+            + (f" · {merchant.get('mp_linked_en')}" if merchant and merchant.get("mp_linked_en") else "")
+        )
+    else:
+        st.error("Este local todavía no autorizó a Finan a cobrar sobre su Mercado Pago.")
+        try:
+            url = mercadopago.authorization_url(merchant_id)
+            st.link_button(
+                "Vincular cuenta de Mercado Pago del local",
+                url,
+                type="primary",
+                use_container_width=True,
+            )
+            st.caption(
+                "Se abre Mercado Pago. El dueño entra con la cuenta del local y acepta. "
+                "Vuelve a esta pantalla ya vinculado."
+            )
+        except mercadopago.MercadoPagoError as exc:
+            st.error(str(exc))
+        return
+
+    if not loans:
+        st.warning("Este comercio no tiene un préstamo activo. Creá uno en Alta.")
+        return
+
+    loan_labels = {
+        f"#{l['id']} · capital {fmt_ars(l['principal'])} · {l['status']}": l["id"] for l in loans
+    }
+    loan_pick = st.selectbox("Préstamo a cobrar", list(loan_labels.keys()), key="mp_loan")
+    loan = get_rbf_loan(loan_labels[loan_pick])
+    if not loan:
+        return
+
+    ret = evaluar_retencion(
+        float(loan["cuota_mensual"]) / 30.0,
+        float(loan.get("avg_daily_sales") or 0),
+    )
+    default_pct = float(ret.get("retention_pct") or 15.0)
+    if default_pct <= 0:
+        default_pct = 15.0
+
+    c1, c2 = st.columns(2)
+    with c1:
+        venta = st.number_input(
+            "Lo que el cliente está pagando ahora en la caja (ARS)",
+            min_value=1.0,
+            value=10_000.0,
+            step=500.0,
+            key="mp_venta",
+        )
+    with c2:
+        pct = st.number_input(
+            "% que se queda Finan de esa venta",
+            min_value=1.0,
+            max_value=40.0,
+            value=min(default_pct, 40.0),
+            step=0.5,
+            key="mp_pct",
+        )
+
+    partes = mercadopago.split_de_venta(venta, pct)
+    result_strip(
+        [
+            ("Cliente paga", fmt_ars(partes["venta"])),
+            ("A Finan", fmt_ars(partes["finan"])),
+            ("Al local (antes de comisión MP)", fmt_ars(partes["comercio_antes_mp"])),
+        ]
+    )
+    st.caption(ret.get("mensaje") or "")
+
+    if st.button("Generar cobro de caja (link / QR Mercado Pago)", type="primary", key="mp_crear"):
+        try:
+            cobro = mercadopago.crear_cobro_local(
+                merchant_id=merchant_id,
+                loan_id=int(loan["id"]),
+                monto_venta=venta,
+                retencion_pct=pct,
+                titulo=f"Venta {loan['business_name']}",
+            )
+            st.session_state["mp_last_init"] = cobro["init_point"]
+            st.success(
+                f"Listo. El cliente paga {fmt_ars(cobro['venta'])} en la caja. "
+                f"Finan se queda {fmt_ars(cobro['finan'])}."
+            )
+        except mercadopago.MercadoPagoError as exc:
+            st.error(str(exc))
+
+    last = st.session_state.get("mp_last_init")
+    if last:
+        st.link_button("Abrir checkout para que pague el cliente", last, use_container_width=True)
+        st.code(last, language=None)
+
+    sales = list_mp_sales(int(loan["id"]))
+    if not sales:
+        return
+
+    st.subheader("Ventas de este préstamo")
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "ID": s["id"],
+                    "Venta": s["sale_amount"],
+                    "A Finan": s["finan_amount"],
+                    "%": s["retention_pct"],
+                    "Estado": s["status"],
+                    "Cuando": s["creado_en"],
+                }
+                for s in sales
+            ]
+        ),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Venta": st.column_config.NumberColumn(format="$ %.2f"),
+            "A Finan": st.column_config.NumberColumn(format="$ %.2f"),
+        },
+    )
+
+    pendientes = [s for s in sales if s["status"] != "cobrada"]
+    if not pendientes:
+        return
+    popts = {f"#{s['id']} · {fmt_ars(s['sale_amount'])} · {s['status']}": s["id"] for s in pendientes}
+    sid = st.selectbox("Si el cliente ya pagó, sincronizar", list(popts.keys()), key="mp_sync_sel")
+    if st.button("Consultar en Mercado Pago y acreditar", key="mp_sync"):
+        try:
+            res = mercadopago.sincronizar_cobro(int(popts[sid]))
+            if res.get("ya_estaba"):
+                st.info("Esa venta ya estaba acreditada.")
+            elif not res.get("encontrado") and res.get("status") == "pendiente":
+                st.warning("Todavía no hay un pago aprobado. Que el cliente termine en la caja.")
+            elif res.get("status") == "cobrada":
+                ap = res.get("aplicado") or {}
+                st.success(
+                    f"Pago aprobado. Se acreditaron {fmt_ars(ap.get('aplicado', 0))} "
+                    f"a los barridos del préstamo."
+                )
+                st.rerun()
+            else:
+                st.warning(f"Mercado Pago informa estado: {res.get('status')}")
+        except mercadopago.MercadoPagoError as exc:
+            st.error(str(exc))

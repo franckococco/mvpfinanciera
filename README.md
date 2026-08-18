@@ -41,9 +41,10 @@ python -m venv .venv
 .\.venv\Scripts\streamlit run app.py
 ```
 
-1. **Trazabilidad → Signatura / Config**: pegá la API key (o `SIGNATURA_API_KEY`).
+1. **Trazabilidad → Signatura / Config**: pegá la API key (o `SIGNATURA_API_KEY`) y, más abajo, las credenciales de Mercado Pago (app de [tus integraciones](https://www.mercadopago.com.ar/developers/panel/app), URL de redirección `http://localhost:8501`).
 2. Registrá un préstamo al comercio o un crédito al cliente: se abre el expediente en `borrador`.
 3. Trazabilidad: PDF → enviar a firmar → sincronizar → checklist → desembolsar.
-4. Cobros: barridos del préstamo y cuotas del cliente se registran a mano (integración con procesadora después).
+4. Cobro del préstamo al comercio: **Préstamo al comercio → Cobro en el local**. El cliente paga en la caja con Mercado Pago; Finan se queda el porcentaje (split).
+5. Crédito al cliente: las cuotas se pagan en la caja del local. A Finan le entra por las ventas del comercio (mismo split), no con un link a la casa.
 
 La base `finan.db` se crea automáticamente (no se versiona).

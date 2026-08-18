@@ -14,6 +14,7 @@ from modules.checklist import get_checklist, save_checklist
 from modules.database import get_operacion, list_operaciones
 from modules.documents import TEMPLATE_VERSION, generar_pdf_operacion, nombre_plantilla
 from modules.legajo import build_legajo_zip
+from modules import mercadopago
 from modules.signatura import SignaturaError
 from modules.traceability import (
     ESTADOS,
@@ -79,9 +80,36 @@ def _render_config() -> None:
             except SignaturaError as exc:
                 st.error(str(exc))
 
+    st.divider()
+    st.subheader("Mercado Pago · split de la caja")
+    st.markdown(
+        "Alta de la app: [Tus integraciones](https://www.mercadopago.com.ar/developers/panel/app). "
+        "La URL de redirección tiene que coincidir **letra por letra** con la de acá "
+        "(en esta PC suele ser `http://localhost:8501`)."
+    )
+    st.write(
+        "Estado:",
+        "✅ credenciales cargadas" if mercadopago.is_configured() else "⚠️ faltan identificador y clave secreta",
+    )
+    mp_id = st.text_input("Identificador de la aplicación (App ID / client id)", key="mp_cfg_id")
+    mp_sec = st.text_input("Clave secreta (client secret)", type="password", key="mp_cfg_sec")
+    mp_redir = st.text_input(
+        "URL de redirección",
+        value=mercadopago.get_redirect_uri(),
+        key="mp_cfg_redir",
+    )
+    if st.button("Guardar Mercado Pago", type="primary", key="mp_cfg_save"):
+        if not mp_id.strip() or not mp_sec.strip():
+            st.error("Completá identificador y clave secreta.")
+        else:
+            mercadopago.save_credentials(mp_id.strip(), mp_sec.strip(), mp_redir.strip())
+            st.success("Credenciales guardadas. Ahora vinculá el local en Préstamo al comercio → Cobro en el local.")
+            st.rerun()
+
     st.info(
         "Flujo: crear expediente → PDF → Enviar a Signatura → Sync firma → "
-        "Desembolsar (solo si listo_desembolso)."
+        "Desembolsar (solo si listo_desembolso). El cobro del préstamo se hace en la caja "
+        "con Mercado Pago (pestaña Cobro en el local)."
     )
 
 

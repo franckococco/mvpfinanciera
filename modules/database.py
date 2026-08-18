@@ -207,8 +207,37 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_rbf_loans_status ON rbf_loans(status);
             CREATE INDEX IF NOT EXISTS idx_rbf_sweeps_loan ON rbf_sweeps(loan_id);
+
+            CREATE TABLE IF NOT EXISTS mp_sales (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                loan_id             INTEGER NOT NULL,
+                merchant_id         INTEGER NOT NULL,
+                sale_amount         REAL    NOT NULL,
+                finan_amount        REAL    NOT NULL,
+                retention_pct       REAL    NOT NULL,
+                preference_id       TEXT,
+                init_point          TEXT,
+                external_reference  TEXT    NOT NULL,
+                status              TEXT    NOT NULL DEFAULT 'pendiente',
+                mp_payment_id       TEXT,
+                creado_en           TEXT    NOT NULL,
+                cobrado_en          TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_mp_sales_loan ON mp_sales(loan_id);
             """
         )
+        _ensure_column(conn, "rbf_merchants", "mp_user_id", "TEXT")
+        _ensure_column(conn, "rbf_merchants", "mp_access_token", "TEXT")
+        _ensure_column(conn, "rbf_merchants", "mp_refresh_token", "TEXT")
+        _ensure_column(conn, "rbf_merchants", "mp_token_expires_at", "TEXT")
+        _ensure_column(conn, "rbf_merchants", "mp_linked_en", "TEXT")
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, col_type: str) -> None:
+    cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
 
 
 # ---------------------------------------------------------------------------
@@ -859,6 +888,134 @@ def get_rbf_merchant(merchant_id: int) -> Optional[dict[str, Any]]:
         return dict(row) if row else None
 
 
+def save_rbf_merchant_mp_tokens(
+    merchant_id: int,
+    *,
+    user_id: str,
+    access_token: str,
+    refresh_token: str,
+    expires_at: str,
+) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE rbf_merchants
+            SET mp_user_id = ?, mp_access_token = ?, mp_refresh_token = ?,
+                mp_token_expires_at = ?, mp_linked_en = ?
+            WHERE id = ?
+            """,
+            (
+                user_id,
+                access_token,
+                refresh_token,
+                expires_at,
+                datetime.now().isoformat(timespec="seconds"),
+                merchant_id,
+            ),
+        )
+
+
+def aplicar_cobro_sweeps(loan_id: int, amount: float) -> dict[str, Any]:
+    """Aplica un cobro (split) a los barridos pendientes, del más viejo al más nuevo."""
+    remaining = round(float(amount), 2)
+    applied: list[dict[str, Any]] = []
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, nro, expected_amount, collected_amount, status
+            FROM rbf_sweeps
+            WHERE loan_id = ?
+              AND status IN ('PENDING', 'PARTIAL', 'OVERDUE')
+            ORDER BY nro ASC
+            """,
+            (loan_id,),
+        ).fetchall()
+        for row in rows:
+            if remaining <= 0.009:
+                break
+            collected = float(row["collected_amount"] or 0)
+            expected = float(row["expected_amount"] or 0)
+            need = round(expected - collected, 2)
+            if need <= 0:
+                continue
+            take = min(need, remaining)
+            new_collected = round(collected + take, 2)
+            status = "PAID" if new_collected + 0.01 >= expected else "PARTIAL"
+            conn.execute(
+                """
+                UPDATE rbf_sweeps
+                SET collected_amount = ?, status = ?
+                WHERE id = ?
+                """,
+                (new_collected, status, int(row["id"])),
+            )
+            remaining = round(remaining - take, 2)
+            applied.append(
+                {
+                    "sweep_id": int(row["id"]),
+                    "nro": int(row["nro"]),
+                    "aplicado": take,
+                    "status": status,
+                }
+            )
+    aplicado = round(float(amount) - remaining, 2)
+    return {"aplicado": aplicado, "sobrante": remaining, "sweeps": applied}
+
+
+def insert_mp_sale(data: dict[str, Any]) -> int:
+    with get_connection() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO mp_sales (
+                loan_id, merchant_id, sale_amount, finan_amount, retention_pct,
+                preference_id, init_point, external_reference, status, creado_en
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data["loan_id"],
+                data["merchant_id"],
+                data["sale_amount"],
+                data["finan_amount"],
+                data["retention_pct"],
+                data.get("preference_id") or "",
+                data.get("init_point") or "",
+                data["external_reference"],
+                data.get("status") or "pendiente",
+                data.get("creado_en") or datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def list_mp_sales(loan_id: int, limit: int = 20) -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM mp_sales
+            WHERE loan_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (loan_id, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_mp_sale(sale_id: int) -> Optional[dict[str, Any]]:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM mp_sales WHERE id = ?", (sale_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def update_mp_sale(sale_id: int, fields: dict[str, Any]) -> None:
+    if not fields:
+        return
+    cols = ", ".join(f"{k} = ?" for k in fields)
+    vals = list(fields.values()) + [sale_id]
+    with get_connection() as conn:
+        conn.execute(f"UPDATE mp_sales SET {cols} WHERE id = ?", vals)
+
+
 def insert_rbf_loan(
     loan: dict[str, Any],
     sweeps: list[dict[str, Any]],
@@ -967,7 +1124,8 @@ def get_rbf_loan(loan_id: int) -> Optional[dict[str, Any]]:
         row = conn.execute(
             """
             SELECT l.*, m.business_name, m.tax_id_cuit, m.avg_daily_sales,
-                   m.tax_status, m.has_echeq, m.email, m.phone
+                   m.tax_status, m.has_echeq, m.email, m.phone,
+                   m.mp_user_id, m.mp_linked_en
             FROM rbf_loans l
             JOIN rbf_merchants m ON m.id = l.merchant_id
             WHERE l.id = ?

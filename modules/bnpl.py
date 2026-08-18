@@ -478,8 +478,9 @@ def render_bnpl() -> None:
     """Vista principal del módulo BNPL con pestañas interactivas."""
     st.header("Crédito al cliente del comercio")
     st.caption(
-        "El cliente compra en el local y paga en cuotas. No es una tarjeta de red "
-        "abierta. Contrato y pagaré se firman en Trazabilidad antes de desembolsar."
+        "El cliente compra en el local y paga las cuotas en la caja del mismo local. "
+        "A Finan le entra por las ventas del comercio (split de Mercado Pago), no con "
+        "un link que el cliente paga desde la casa. Contrato y pagaré se firman en Trazabilidad."
     )
 
     tab_sim, tab_cart = st.tabs(["Simular & Registrar", "Cartera & Cobros"])

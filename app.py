@@ -16,6 +16,7 @@ import streamlit as st
 
 from modules.bnpl import render_bnpl
 from modules.database import get_dashboard_metrics, init_db
+from modules.mercadopago import consume_oauth_if_present
 from modules.rbf_ui import render_rbf
 from modules.trazabilidad_ui import render_trazabilidad
 from modules.ui import fmt_ars, inject_styles, kpi_card, plotly_layout
@@ -222,6 +223,9 @@ def main() -> None:
     """Inicializa la DB, aplica estilos y renderiza la navegación."""
     inject_styles()
     init_db()
+    mp_msg = consume_oauth_if_present()
+    if mp_msg:
+        st.session_state["mp_flash"] = mp_msg
 
     with st.sidebar:
         st.markdown('<p class="finan-brand">Finan</p>', unsafe_allow_html=True)
@@ -249,6 +253,10 @@ def main() -> None:
         st.metric("Cartera", fmt_ars(metrics["cartera_activa_total"]))
         st.metric("Ingresos mes", fmt_ars(metrics["ingresos_mes"]))
         st.caption("Datos locales · `finan.db`")
+
+    flash = st.session_state.pop("mp_flash", None)
+    if flash:
+        st.success(flash)
 
     if pagina == "Dashboard":
         render_dashboard()
